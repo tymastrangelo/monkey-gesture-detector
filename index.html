@@ -47,9 +47,42 @@
             object-fit: contain;
             background: #000;
         }
+
+        #toggleOverlay {
+            position: fixed;
+            top: 20px;
+            left: 20px;
+            z-index: 1000;
+            background: rgba(0, 0, 0, 0.7);
+            color: #00FF00;
+            border: 2px solid #00FF00;
+            padding: 10px 20px;
+            font-size: 16px;
+            font-family: monospace;
+            cursor: pointer;
+            border-radius: 5px;
+            transition: all 0.2s;
+        }
+
+        #toggleOverlay:hover {
+            background: rgba(0, 255, 0, 0.2);
+            box-shadow: 0 0 10px #00FF00;
+        }
+
+        #toggleOverlay.off {
+            color: #FF0000;
+            border-color: #FF0000;
+        }
+
+        #toggleOverlay.off:hover {
+            background: rgba(255, 0, 0, 0.2);
+            box-shadow: 0 0 10px #FF0000;
+        }
     </style>
 </head>
 <body>
+    <button id="toggleOverlay">TRACKING: ON</button>
+    
     <div class="split-view">
         <div class="panel">
             <video id="videoElement" autoplay playsinline></video>
@@ -87,6 +120,7 @@
         let currentDisplayedState = 'blank.jpg';
         let gestureHistory = [];
         let noHandFrameCount = 0;
+        let showOverlay = true; // Toggle for hand tracking overlay
 
         // Image states
         const MEME_STATES = {
@@ -136,6 +170,19 @@
 
                 // Get meme image element
                 memeImage = document.getElementById('memeImage');
+
+                // Setup toggle button
+                const toggleButton = document.getElementById('toggleOverlay');
+                toggleButton.addEventListener('click', () => {
+                    showOverlay = !showOverlay;
+                    if (showOverlay) {
+                        toggleButton.textContent = 'TRACKING: ON';
+                        toggleButton.classList.remove('off');
+                    } else {
+                        toggleButton.textContent = 'TRACKING: OFF';
+                        toggleButton.classList.add('off');
+                    }
+                });
 
                 // Start the detection loop
                 detectGesture();
@@ -248,6 +295,7 @@
             ctx.restore();
 
             let detectedGesture = null;
+            let handsToVisualize = [];
 
             // Detect face and hand
             if (video.currentTime !== lastVideoTime) {
@@ -260,6 +308,9 @@
                 if (handResults.landmarks && handResults.landmarks.length > 0) {
                     // Hand detected - reset no-hand counter
                     noHandFrameCount = 0;
+                    
+                    // Store hands for visualization
+                    handsToVisualize = handResults.landmarks;
                     
                     // Check if two hands are detected
                     if (handResults.landmarks.length === 2) {
@@ -330,8 +381,74 @@
                 memeImage.src = newState;
             }
 
+            // Draw hand landmarks and connections
+            if (showOverlay) {
+                drawHandLandmarks(handsToVisualize);
+            }
+
             // Continue the loop
             requestAnimationFrame(detectGesture);
+        }
+
+        // Draw hand skeleton overlay
+        function drawHandLandmarks(hands) {
+            if (!hands || hands.length === 0) return;
+
+            // Hand connections (finger bones)
+            const connections = [
+                // Thumb
+                [0, 1], [1, 2], [2, 3], [3, 4],
+                // Index finger
+                [0, 5], [5, 6], [6, 7], [7, 8],
+                // Middle finger
+                [0, 9], [9, 10], [10, 11], [11, 12],
+                // Ring finger
+                [0, 13], [13, 14], [14, 15], [15, 16],
+                // Pinky
+                [0, 17], [17, 18], [18, 19], [19, 20],
+                // Palm
+                [5, 9], [9, 13], [13, 17]
+            ];
+
+            for (let hand of hands) {
+                // Draw connections (lines)
+                ctx.strokeStyle = '#00FF00';
+                ctx.lineWidth = 2;
+                ctx.beginPath();
+                
+                for (let connection of connections) {
+                    const start = hand[connection[0]];
+                    const end = hand[connection[1]];
+                    
+                    // Convert normalized coordinates to canvas coordinates (with mirroring)
+                    const startX = canvas.width - (start.x * canvas.width);
+                    const startY = start.y * canvas.height;
+                    const endX = canvas.width - (end.x * canvas.width);
+                    const endY = end.y * canvas.height;
+                    
+                    ctx.moveTo(startX, startY);
+                    ctx.lineTo(endX, endY);
+                }
+                ctx.stroke();
+
+                // Draw landmark points (dots)
+                for (let landmark of hand) {
+                    const x = canvas.width - (landmark.x * canvas.width);
+                    const y = landmark.y * canvas.height;
+                    
+                    // Draw outer circle
+                    ctx.fillStyle = '#00FF00';
+                    ctx.beginPath();
+                    ctx.arc(x, y, 5, 0, 2 * Math.PI);
+                    ctx.fill();
+                    
+                    // Draw inner circle for depth effect
+                    ctx.fillStyle = '#FFFFFF';
+                    ctx.beginPath();
+                    ctx.arc(x, y, 2, 0, 2 * Math.PI);
+                    ctx.fill();
+                }
+            }
         }
 
         // Start the application
