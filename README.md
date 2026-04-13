@@ -31,13 +31,13 @@ The app smooths detections across recent frames to reduce flicker.
 ## Basic Image References
 
 ### Blank
-![Blank](blank.jpg)
+<img src="blank.jpg" alt="Blank" width="260" height="260" />
 
 ### Evil
-![Evil](evil.png)
+<img src="evil.png" alt="Evil" width="260" height="260" />
 
 ### Smile
-![Smile](smile.jpg)
+<img src="smile.jpg" alt="Smile" width="260" height="260" />
 
-### Think (extra)
-![Think](think.jpg)
+### Think
+<img src="think.jpg" alt="Think" width="260" height="260" />
