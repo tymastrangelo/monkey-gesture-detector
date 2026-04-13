@@ -78,10 +78,27 @@
             background: rgba(255, 0, 0, 0.2);
             box-shadow: 0 0 10px #FF0000;
         }
+
+        #faceDebug {
+            position: fixed;
+            top: 72px;
+            left: 20px;
+            z-index: 1000;
+            background: rgba(0, 0, 0, 0.72);
+            color: #00FF00;
+            border: 1px solid rgba(0, 255, 0, 0.5);
+            padding: 8px 10px;
+            font-size: 12px;
+            font-family: monospace;
+            border-radius: 5px;
+            white-space: pre;
+            pointer-events: none;
+        }
     </style>
 </head>
 <body>
     <button id="toggleOverlay">TRACKING: ON</button>
+    <div id="faceDebug">tongue: 0.00\njaw: 0.00\nmouth: 0.00</div>
     
     <div class="split-view">
         <div class="panel">
@@ -104,6 +121,12 @@
         const VIDEO_HEIGHT = 480;
         const GESTURE_HISTORY_SIZE = 5; // Increased for better smoothing
         const NO_HAND_THRESHOLD = 8; // Need 8 consecutive frames with no hand to show blank
+        const MOUTH_OPEN_WIDE_THRESHOLD = 0.52; // Normalized mouth openness ratio
+        const TONGUE_OUT_THRESHOLD = 0.08; // Lowered for better real-world tongue detection
+        const TONGUE_MOUTH_OPEN_MIN = 0.22; // Require some mouth openness to reduce false positives
+        const JAW_OPEN_THRESHOLD = 0.45; // Fallback when tongueOut blendshape is weak
+        const EXTREME_MOUTH_OPEN_THRESHOLD = 0.80; // Strong open-mouth fallback for tongue
+        const TONGUE_HINT_MIN = 0.02; // Prevent plain open-mouth from being classified as tongue
         const MIN_DETECTION_CONFIDENCE = 0.7;
         const MIN_TRACKING_CONFIDENCE = 0.7;
 
@@ -114,6 +137,7 @@
         let canvas;
         let ctx;
         let memeImage;
+        let faceDebug;
         let lastVideoTime = -1;
 
         // Gesture state tracking
@@ -127,6 +151,10 @@
             BLANK: 'blank.jpg',
             SMILE: 'smile.jpg',
             THINK: 'think.jpg',
+            MOUTH: 'mouth.png',
+            TONGUE: 'tongue.png',
+            FIST: 'fist.png',
+            MIDDLE_FINGER: 'middle.png',
             EVIL: 'evil.png'
         };
 
@@ -144,7 +172,7 @@
                         modelAssetPath: 'https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task',
                         delegate: "GPU"
                     },
-                    outputFaceBlendshapes: false,
+                    outputFaceBlendshapes: true,
                     outputFacialTransformationMatrixes: false,
                     runningMode: "VIDEO",
                     numFaces: 1,
@@ -170,6 +198,7 @@
 
                 // Get meme image element
                 memeImage = document.getElementById('memeImage');
+                faceDebug = document.getElementById('faceDebug');
 
                 // Setup toggle button
                 const toggleButton = document.getElementById('toggleOverlay');
@@ -223,6 +252,123 @@
             const dx = point1.x - point2.x;
             const dy = point1.y - point2.y;
             return Math.sqrt(dx * dx + dy * dy);
+        }
+
+        // Check if mouth is opened very wide based on lip distance ratio
+        function getMouthOpenRatio(faceLandmarks) {
+            // MediaPipe face mesh: upper inner lip (13), lower inner lip (14), mouth corners (78, 308)
+            const upperInnerLip = faceLandmarks[13];
+            const lowerInnerLip = faceLandmarks[14];
+            const leftMouthCorner = faceLandmarks[78];
+            const rightMouthCorner = faceLandmarks[308];
+
+            const mouthOpenDistance = calculateDistance(upperInnerLip, lowerInnerLip);
+            const mouthWidth = calculateDistance(leftMouthCorner, rightMouthCorner);
+            if (mouthWidth === 0) return 0;
+
+            return mouthOpenDistance / mouthWidth;
+        }
+
+        function isMouthOpenWide(faceLandmarks) {
+            const opennessRatio = getMouthOpenRatio(faceLandmarks);
+            return opennessRatio > MOUTH_OPEN_WIDE_THRESHOLD;
+        }
+
+        function getBlendshapeScore(faceBlendshapes, categoryNames) {
+            if (!faceBlendshapes || !faceBlendshapes.categories) return 0;
+
+            for (const category of faceBlendshapes.categories) {
+                const name = (category.categoryName || '').toLowerCase();
+                if (categoryNames.some((candidate) => name === candidate || name.includes(candidate))) {
+                    return category.score;
+                }
+            }
+            return 0;
+        }
+
+        // Check if tongue is out using face blendshape signal + mouth openness.
+        function isTongueOut(faceBlendshapes, faceLandmarks) {
+            const tongueScore = getBlendshapeScore(faceBlendshapes, ['tongueout', 'tongue']);
+            const jawOpenScore = getBlendshapeScore(faceBlendshapes, ['jawopen']);
+            const mouthOpenRatio = faceLandmarks ? getMouthOpenRatio(faceLandmarks) : 0;
+
+            const directTongue =
+                tongueScore > TONGUE_OUT_THRESHOLD &&
+                mouthOpenRatio > TONGUE_MOUTH_OPEN_MIN;
+
+            // Fallback path for devices/models where tongueOut stays low.
+            const fallbackTongue =
+                tongueScore > TONGUE_HINT_MIN &&
+                jawOpenScore > JAW_OPEN_THRESHOLD &&
+                mouthOpenRatio > EXTREME_MOUTH_OPEN_THRESHOLD;
+
+            return {
+                detected: directTongue || fallbackTongue,
+                tongueScore,
+                jawOpenScore,
+                mouthOpenRatio
+            };
+        }
+
+        // Check if a hand is making a middle finger gesture
+        function isMiddleFingerGesture(hand) {
+            const wrist = hand[0];
+
+            function isFingerExtended(tipIndex, pipIndex, mcpIndex) {
+                const tip = hand[tipIndex];
+                const pip = hand[pipIndex];
+                const mcp = hand[mcpIndex];
+
+                return (
+                    tip.y < pip.y &&
+                    pip.y < mcp.y &&
+                    calculateDistance(wrist, tip) > calculateDistance(wrist, pip)
+                );
+            }
+
+            function isFingerFolded(tipIndex, pipIndex) {
+                const tip = hand[tipIndex];
+                const pip = hand[pipIndex];
+
+                return (
+                    tip.y > pip.y ||
+                    calculateDistance(wrist, tip) < calculateDistance(wrist, pip)
+                );
+            }
+
+            // Middle finger should be the only clearly extended finger.
+            return (
+                isFingerExtended(12, 10, 9) &&
+                isFingerFolded(8, 6) &&
+                isFingerFolded(16, 14) &&
+                isFingerFolded(20, 18)
+            );
+        }
+
+        // Check if a hand is closed (making a fist)
+        function isHandClosed(hand) {
+            // Fingertips: thumb (4), index (8), middle (12), ring (16), pinky (20)
+            const fingertips = [hand[4], hand[8], hand[12], hand[16], hand[20]];
+            const wrist = hand[0];
+            
+            // Check if all fingertips are close to the wrist/palm
+            let totalDistance = 0;
+            for (let tip of fingertips) {
+                totalDistance += calculateDistance(wrist, tip);
+            }
+            const avgDistance = totalDistance / fingertips.length;
+            
+            // Also check if fingertips are close to each other
+            let fingertipSpread = 0;
+            for (let i = 0; i < fingertips.length; i++) {
+                for (let j = i + 1; j < fingertips.length; j++) {
+                    fingertipSpread += calculateDistance(fingertips[i], fingertips[j]);
+                }
+            }
+            fingertipSpread = fingertipSpread / (fingertips.length * (fingertips.length - 1) / 2);
+            
+            // Hand is closed if fingertips are close to wrist AND close to each other
+            return avgDistance < 0.15 && fingertipSpread < 0.15;
         }
 
         // Check if two hands are together (palms facing each other)
@@ -303,9 +449,29 @@
                 
                 const faceResults = faceLandmarker.detectForVideo(video, currentTime);
                 const handResults = handLandmarker.detectForVideo(video, currentTime);
+                const hasFace = faceResults.faceLandmarks && faceResults.faceLandmarks.length > 0;
+                const primaryFaceLandmarks = hasFace ? faceResults.faceLandmarks[0] : null;
+                const hasFaceBlendshapes = faceResults.faceBlendshapes && faceResults.faceBlendshapes.length > 0;
+                const primaryFaceBlendshapes = hasFaceBlendshapes ? faceResults.faceBlendshapes[0] : null;
+                const tongueEvaluation = isTongueOut(primaryFaceBlendshapes, primaryFaceLandmarks);
+                const tongueDetected =
+                    hasFace &&
+                    tongueEvaluation.detected;
+
+                if (faceDebug) {
+                    faceDebug.textContent =
+                        `tongue: ${tongueEvaluation.tongueScore.toFixed(2)}\n` +
+                        `jaw: ${tongueEvaluation.jawOpenScore.toFixed(2)}\n` +
+                        `mouth: ${tongueEvaluation.mouthOpenRatio.toFixed(2)}`;
+                }
+
+                if (tongueDetected) {
+                    detectedGesture = MEME_STATES.TONGUE;
+                    noHandFrameCount = 0;
+                }
 
                 // Process hand landmarks
-                if (handResults.landmarks && handResults.landmarks.length > 0) {
+                if (!tongueDetected && handResults.landmarks && handResults.landmarks.length > 0) {
                     // Hand detected - reset no-hand counter
                     noHandFrameCount = 0;
                     
@@ -320,18 +486,29 @@
                         // Check if hands are together - PRIORITY 1
                         if (areHandsTogether(hand1, hand2)) {
                             detectedGesture = MEME_STATES.EVIL;
+                        } else if (isMiddleFingerGesture(hand1) || isMiddleFingerGesture(hand2)) {
+                            // One or both hands making middle finger - PRIORITY 2
+                            detectedGesture = MEME_STATES.MIDDLE_FINGER;
+                        } else if (isHandClosed(hand1) || isHandClosed(hand2)) {
+                            // One or both hands making a fist - PRIORITY 3
+                            detectedGesture = MEME_STATES.FIST;
                         } else {
-                            // Two hands but not together
+                            // Two hands but no other gesture
                             detectedGesture = MEME_STATES.SMILE;
                         }
                     } else {
                         // Only one hand detected
                         const hand = handResults.landmarks[0];
                         
-                        // Check if face is detected for mouth proximity - PRIORITY 2
-                        if (faceResults.faceLandmarks && faceResults.faceLandmarks.length > 0) {
-                            const faceLandmarks = faceResults.faceLandmarks[0];
-                            const upperLip = faceLandmarks[13];
+                        // Check if hand is making middle finger - PRIORITY 2
+                        if (isMiddleFingerGesture(hand)) {
+                            detectedGesture = MEME_STATES.MIDDLE_FINGER;
+                        } else if (isHandClosed(hand)) {
+                            // Check if hand is closed (fist) - PRIORITY 3
+                            detectedGesture = MEME_STATES.FIST;
+                        } else if (hasFace) {
+                            // Check if face is detected for mouth proximity - PRIORITY 4
+                            const upperLip = primaryFaceLandmarks[13];
                             const indexFingerTip = hand[8];
                             const distance = calculateDistance(indexFingerTip, upperLip);
 
@@ -341,17 +518,22 @@
                                 detectedGesture = MEME_STATES.SMILE;
                             }
                         } else {
-                            // One hand, no face detected
+                            // One hand, no other gestures detected
                             detectedGesture = MEME_STATES.SMILE;
                         }
                     }
-                } else {
-                    // No hand detected - increment counter
-                    noHandFrameCount++;
+                } else if (!tongueDetected) {
+                    // No hand: allow wide-open mouth before falling back to blank.
+                    if (hasFace && isMouthOpenWide(primaryFaceLandmarks)) {
+                        detectedGesture = MEME_STATES.MOUTH;
+                        noHandFrameCount = 0;
+                    } else {
+                        noHandFrameCount++;
+                    }
                 }
             }
 
-            // Update gesture history only if hand is detected
+            // Update gesture history when we have any detected gesture
             if (detectedGesture !== null) {
                 gestureHistory.push(detectedGesture);
                 if (gestureHistory.length > GESTURE_HISTORY_SIZE) {
@@ -361,8 +543,14 @@
 
             // Determine which state to display with priority logic
             let newState;
-            
-            if (noHandFrameCount > NO_HAND_THRESHOLD) {
+
+            if (detectedGesture === MEME_STATES.TONGUE) {
+                // Tongue is often brief, so show immediately when detected.
+                newState = MEME_STATES.TONGUE;
+            } else if (detectedGesture === MEME_STATES.MOUTH) {
+                // Mouth-open should also show immediately instead of waiting on history smoothing.
+                newState = MEME_STATES.MOUTH;
+            } else if (noHandFrameCount > NO_HAND_THRESHOLD) {
                 // Only show blank after many consecutive frames with no hand
                 newState = MEME_STATES.BLANK;
                 gestureHistory = []; // Clear history when going to blank
