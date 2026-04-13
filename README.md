@@ -28,6 +28,8 @@ The app smooths detections across recent frames to reduce flicker.
 3. Allow camera access when prompted.
 4. Make faces and hand signs.
 
+Or try the live preview: https://tymastrangelo.github.io/monkey-gesture-detector/
+
 ## Basic Image References
 
 ### Blank
